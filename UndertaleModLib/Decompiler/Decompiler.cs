@@ -51,6 +51,7 @@ namespace UndertaleModLib.Decompiler
         public Dictionary<UndertaleVariable, AssetIDType> assetTypes = new Dictionary<UndertaleVariable, AssetIDType>();
         public int TempVarId;
         public Dictionary<string, AssetIDType[]> scriptArgs = new Dictionary<string, AssetIDType[]>();
+        public Dictionary<string, AssetIDType> scriptReturns = new Dictionary<string, AssetIDType>();
 
         public bool isGameMaker2 { get => Data != null && Data.IsGameMaker2(); }
 
@@ -65,6 +66,7 @@ namespace UndertaleModLib.Decompiler
             // This will not be done automatically, because it would cause significant slowdown having to recalculate this each time, and there's no reason to reset it if it's decompiling a bunch at once.
             // But, since it is possible to invalidate this data, we add this here so we'll be able to invalidate it if we need to.
             scriptArgs.Clear();
+            scriptReturns.Clear();
         }
 
         public void Setup(UndertaleCode code)
@@ -198,7 +200,7 @@ namespace UndertaleModLib.Decompiler
         {
             public object Value;
             public bool IsPushE;
-            internal AssetIDType AssetType = AssetIDType.Other;
+            public AssetIDType AssetType = AssetIDType.Other;
 
             public ExpressionConstant(UndertaleInstruction.DataType type, object value, bool isPushE = false)
             {
@@ -993,7 +995,17 @@ namespace UndertaleModLib.Decompiler
 
             internal override AssetIDType DoTypePropagation(DecompileContext context, AssetIDType suggestedType)
             {
-                return Value.DoTypePropagation(context, Destination.DoTypePropagation(context, suggestedType));
+                var st1 = Destination.DoTypePropagation(context, suggestedType);
+                if (st1 == AssetIDType.Other)
+                {
+                    var st2 = Value.DoTypePropagation(context, suggestedType);
+                    Destination.DoTypePropagation(context, st2);
+                    return st2;
+                }
+                else
+                {
+                    return Value.DoTypePropagation(context, st1);
+                }
             }
         }
 
@@ -1057,9 +1069,9 @@ namespace UndertaleModLib.Decompiler
         // Represents a high-level function or script call.
         public class FunctionCall : Expression
         {
-            private UndertaleFunction Function;
-            private UndertaleInstruction.DataType ReturnType;
-            private List<Expression> Arguments;
+            public UndertaleFunction Function;
+            public UndertaleInstruction.DataType ReturnType;
+            public List<Expression> Arguments;
 
             public FunctionCall(UndertaleFunction function, UndertaleInstruction.DataType returnType, List<Expression> args)
             {
@@ -1093,31 +1105,50 @@ namespace UndertaleModLib.Decompiler
 
             internal override AssetIDType DoTypePropagation(DecompileContext context, AssetIDType suggestedType)
             {
-                var script_code = context.Data?.Scripts.ByName(Function.Name.Content)?.Code;
-                if (script_code != null && !context.scriptArgs.ContainsKey(Function.Name.Content))
+                var function_name = Function.Name.Content;
+                if (function_name == "script_execute" && Arguments.Count >= 1 && Arguments[0] is ExpressionConstant)
                 {
-                    context.scriptArgs.Add(Function.Name.Content, null); // stop the recursion from looping
+                    var ec = Arguments[0] as ExpressionConstant;
+                    int? idx = ExpressionConstant.ConvertToInt(ec.Value);
+                    if (idx.HasValue && idx.Value >= 0 && idx.Value < context.Data.Scripts.Count)
+                    {
+                        function_name = context.Data.Scripts[idx.Value].Name.Content;
+                    }
+                }
+                var script_code = context.Data?.Scripts.ByName(function_name)?.Code;
+                if (script_code != null && !context.scriptArgs.ContainsKey(function_name))
+                {
+                    context.scriptArgs.Add(function_name, null); // stop the recursion from looping
                     var xxx = context.assetTypes;
                     context.assetTypes = new Dictionary<UndertaleVariable, AssetIDType>(); // Apply a temporary dictionary which types will be applied to.
                     Dictionary<uint, Block> blocks = Decompiler.PrepareDecompileFlow(script_code);
                     Decompiler.DecompileFromBlock(context, blocks[0]);
-                    Decompiler.DoTypePropagation(context, blocks); // TODO: This should probably put suggestedType through the "return" statement at the other end
-                    context.scriptArgs[Function.Name.Content] = new AssetIDType[15];
+                    AssetIDType retType = Decompiler.DoTypePropagation(context, blocks);
+                    if (retType != AssetIDType.Other)
+                    {
+                        suggestedType = retType;
+                    }
+                    context.scriptArgs[function_name] = new AssetIDType[15];
                     for (int i = 0; i < 15; i++)
                     {
                         var v = context.assetTypes.Where((x) => x.Key.Name.Content == "argument" + i);
-                        context.scriptArgs[Function.Name.Content][i] = v.Count() > 0 ? v.First().Value : AssetIDType.Other;
+                        context.scriptArgs[function_name][i] = v.Count() > 0 ? v.First().Value : AssetIDType.Other;
                     }
+                    context.scriptReturns[function_name] = retType;
                     context.assetTypes = xxx; // restore original / proper map.
+                }
+                else if (context.scriptReturns.ContainsKey(function_name))
+                {
+                    suggestedType = context.scriptReturns[function_name];
                 }
 
                 AssetIDType[] args = new AssetIDType[Arguments.Count];
-                AssetTypeResolver.AnnotateTypesForFunctionCall(Function.Name.Content, args, context.scriptArgs);
+                AssetTypeResolver.AnnotateTypesForFunctionCall(function_name, Function.Name.Content, args, context.scriptArgs);
                 for (var i = 0; i < Arguments.Count; i++)
                 {
                     Arguments[i].DoTypePropagation(context, args[i]);
                 }
-                return suggestedType; // TODO: maybe we should handle returned values too?
+                return suggestedType;
             }
 
             internal override bool IsDuplicationSafe()
@@ -2174,8 +2205,8 @@ namespace UndertaleModLib.Decompiler
 
         public class HLSwitchStatement : HLStatement
         {
-            private Expression SwitchExpression;
-            private List<HLSwitchCaseStatement> Cases;
+            public Expression SwitchExpression;
+            public List<HLSwitchCaseStatement> Cases;
 
             public HLSwitchStatement(Expression switchExpression, List<HLSwitchCaseStatement> cases)
             {
@@ -2708,34 +2739,47 @@ namespace UndertaleModLib.Decompiler
             return result;
         }
 
-        public static string Decompile(UndertaleCode code, DecompileContext context)
+        public static List<Statement> GetStatements(UndertaleCode code, DecompileContext context)
         {
             context.Setup(code);
 
             Dictionary<uint, Block> blocks = PrepareDecompileFlow(code);
             DecompileFromBlock(context, blocks[0]);
             DoTypePropagation(context, blocks);
-            List<Statement> stmts = HLDecompile(context, blocks, blocks[0], blocks[code.Length / 4]);
+            return HLDecompile(context, blocks, blocks[0], blocks[code.Length / 4]);
+        }
 
+        public static string Decompile(UndertaleCode code, DecompileContext context)
+        {
             // Write code.
             StringBuilder sb = new StringBuilder();
-            foreach (var stmt in stmts)
+            foreach (var stmt in GetStatements(code, context))
                 sb.Append(stmt.ToString(context) + "\n");
 
             string decompiledCode = sb.ToString();
             return MakeLocalVars(context, decompiledCode) + decompiledCode;
         }
 
-        private static void DoTypePropagation(DecompileContext context, Dictionary<uint, Block> blocks)
+        public static AssetIDType DoTypePropagation(DecompileContext context, Dictionary<uint, Block> blocks)
         {
+            AssetIDType type = AssetIDType.Other;
             foreach (var b in blocks.Values.Cast<Block>().Reverse())
             {
                 if (b.Statements != null) // With returns not allowing all blocks coverage, make sure it's even been processed
+                {
                     foreach (var s in b.Statements.Cast<Statement>().Reverse())
-                        s.DoTypePropagation(context, AssetIDType.Other);
+                    {
+                        AssetIDType sType = s.DoTypePropagation(context, AssetIDType.Other);
+                        if (s is ReturnStatement && sType != AssetIDType.Other)
+                        {
+                            type = sType;
+                        }
+                    }
+                }
 
                 b.ConditionStatement?.DoTypePropagation(context, AssetIDType.Other);
             }
+            return type;
         }
 
         private static Block DetermineSwitchEnd(Block start, Block end, Block meetPoint)

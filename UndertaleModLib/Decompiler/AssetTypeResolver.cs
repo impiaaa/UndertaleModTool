@@ -328,13 +328,13 @@ namespace UndertaleModLib.Decompiler
 
         public static Dictionary<string, AssetIDType> builtin_vars;
 
-        internal static bool AnnotateTypesForFunctionCall(string function_name, AssetIDType[] arguments, Dictionary<string, AssetIDType[]> scriptArgs)
+        internal static bool AnnotateTypesForFunctionCall(string function_name, string actual_function_name, AssetIDType[] arguments, Dictionary<string, AssetIDType[]> scriptArgs)
         {
             // Scripts overload builtins because in GMS2 some functions are just backwards-compatibility scripts
-            if (scriptArgs.ContainsKey(function_name) && scriptArgs[function_name] != null)
+            if (scriptArgs.ContainsKey(actual_function_name) && scriptArgs[actual_function_name] != null)
             {
-                for (int i = 0; i < arguments.Length && i < scriptArgs[function_name].Length; i++)
-                    arguments[i] = scriptArgs[function_name][i];
+                for (int i = 0; i < arguments.Length && i < scriptArgs[actual_function_name].Length; i++)
+                    arguments[i] = scriptArgs[actual_function_name][i];
                 return true;
             }
 
@@ -349,7 +349,7 @@ namespace UndertaleModLib.Decompiler
                     arguments[i] = func_types[i];
                 return true;
             }
-            if (function_name == "script_execute")
+            if (actual_function_name == "script_execute")
             {
                 // This needs a special case
                 if (arguments.Length < 1)
@@ -1184,6 +1184,8 @@ namespace UndertaleModLib.Decompiler
                 //C TIER quality
                 builtin_vars.Add("sound1", AssetIDType.Sound);
                 builtin_vars.Add("sound2", AssetIDType.Sound);
+
+                builtin_vars.Add("txtsound", AssetIDType.Sound);
             }
         }
     }
