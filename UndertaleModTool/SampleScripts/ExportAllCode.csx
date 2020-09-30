@@ -5,7 +5,7 @@ using System.Threading;
 using System.Threading.Tasks;
 
 int progress = 0;
-string codeFolder = GetFolder(FilePath) + "Export_Code" + Path.DirectorySeparatorChar;
+string codeFolder = Path.Combine(GetFolder(FilePath), "Export_Code");
 ThreadLocal<DecompileContext> DECOMPILE_CONTEXT = new ThreadLocal<DecompileContext>(() => new DecompileContext(Data, false));
 
 if (Directory.Exists(codeFolder)) 
@@ -28,7 +28,7 @@ void UpdateProgress()
 
 string GetFolder(string path)
 {
-    return Path.GetDirectoryName(path) + Path.DirectorySeparatorChar;
+    return Path.GetDirectoryName(path);
 }
 
 
