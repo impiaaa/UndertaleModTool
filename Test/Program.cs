@@ -98,6 +98,11 @@ namespace Test
 
         static void Main(string[] args)
         {
+            if (args.Length < 2)
+            {
+                Console.Error.WriteLine("Usage: Test.exe <data> <script> [<output>]");
+                return;
+            }
             string dataPath = args[0];
             string scriptPath = args[1];
 
